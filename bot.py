@@ -17,7 +17,6 @@ LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', '0'))
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
-intents.presence = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
