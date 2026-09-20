@@ -84,9 +84,12 @@ async def on_ready():
         logger.info(f'Bot logged in as {bot.user}')
  
     logger.info(f'py-cord version: {discord.__version__}')
+    logger.info(f'Looking for guild with ID: {GUILD_ID}')
+    logger.info(f'Bot is currently in guilds: {[(g.id, g.name) for g in bot.guilds]}')
  
     guild = bot.get_guild(GUILD_ID)
     if guild:
+        logger.info(f'Found guild: {guild.name} ({guild.id})')
         role = discord.utils.get(guild.roles, name=SUPER_MEMBER_ROLE_NAME)
         if not role:
             try:
@@ -94,23 +97,33 @@ async def on_ready():
                 logger.info(f'Created {SUPER_MEMBER_ROLE_NAME} role')
             except Exception as e:
                 logger.error(f'Failed to create role: {e}')
+        else:
+            logger.info(f'Found existing {SUPER_MEMBER_ROLE_NAME} role: {role.id}')
  
         # Make sure member cache is fully populated so on_member_update
         # fires reliably for everyone, not just members already cached.
+        logger.info(f'Member count before chunk: {len(guild.members)}')
         try:
             await guild.chunk()
+            logger.info(f'Chunk complete. Member count after chunk: {len(guild.members)}')
         except Exception as e:
             logger.error(f'Failed to chunk guild members: {e}')
  
         # Reconcile roles on startup in case tag changes happened while the bot was offline.
+        logger.info('Starting sync_all_tag_roles...')
         await sync_all_tag_roles(guild, role)
+        logger.info('Finished sync_all_tag_roles.')
+    else:
+        logger.error(f'guild is None! bot.get_guild({GUILD_ID}) returned nothing. Check GUILD_ID and that the bot is actually in this server.')
  
  
 async def sync_all_tag_roles(guild: discord.Guild, role: discord.Role):
     """On startup, check every cached member's current server-tag status
     against whether they hold the Super Member role, and fix any mismatch."""
     if not role:
+        logger.info('[sync] No role passed in, skipping sync entirely.')
         return
+    logger.info(f'[sync] Iterating over {len(guild.members)} cached members...')
     for member in guild.members:
         if member.bot:
             continue
