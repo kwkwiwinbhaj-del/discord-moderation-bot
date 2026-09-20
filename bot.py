@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord.ext import commands
 import logging
@@ -110,34 +111,56 @@ async def on_ready():
             logger.error(f'Failed to chunk guild members: {e}')
  
         # Reconcile roles on startup in case tag changes happened while the bot was offline.
-        logger.info('Starting sync_all_tag_roles...')
-        await sync_all_tag_roles(guild, role)
-        logger.info('Finished sync_all_tag_roles.')
+        # Runs as a background task (not awaited) so on_ready doesn't block for
+        # a long time on a large guild - check the logs for '[sync]' lines to
+        # track progress.
+        asyncio.create_task(sync_all_tag_roles(guild, role))
+        logger.info('Kicked off sync_all_tag_roles as a background task.')
     else:
         logger.error(f'guild is None! bot.get_guild({GUILD_ID}) returned nothing. Check GUILD_ID and that the bot is actually in this server.')
  
  
-async def sync_all_tag_roles(guild: discord.Guild, role: discord.Role):
-    """On startup, check every cached member's current server-tag status
-    against whether they hold the Super Member role, and fix any mismatch."""
+async def sync_all_tag_roles(guild: discord.Guild, role: discord.Role, status_callback=None):
+    """Check every cached member's current server-tag status against whether
+    they hold the Super Member role, and fix any mismatch. Runs slowly on
+    purpose (small delay per change) to stay well under Discord's rate limits
+    on large guilds. Returns (added, removed, checked) counts."""
     if not role:
         logger.info('[sync] No role passed in, skipping sync entirely.')
-        return
-    logger.info(f'[sync] Iterating over {len(guild.members)} cached members...')
-    for member in guild.members:
+        if status_callback:
+            await status_callback('No Super Member role found - nothing to sync.')
+        return 0, 0, 0
+ 
+    members = guild.members
+    logger.info(f'[sync] Iterating over {len(members)} cached members...')
+    added = 0
+    removed = 0
+    for i, member in enumerate(members, 1):
         if member.bot:
             continue
         is_tagged = member_is_tagged(member, guild.id)
         has_role = role in member.roles
         try:
             if is_tagged and not has_role:
-                await member.add_roles(role, reason='Server tag sync on startup')
+                await member.add_roles(role, reason='Server tag sync')
+                added += 1
                 logger.info(f'[sync] Added {SUPER_MEMBER_ROLE_NAME} to {member.display_name}')
+                await asyncio.sleep(0.3)
             elif not is_tagged and has_role:
-                await member.remove_roles(role, reason='Server tag sync on startup')
+                await member.remove_roles(role, reason='Server tag sync')
+                removed += 1
                 logger.info(f'[sync] Removed {SUPER_MEMBER_ROLE_NAME} from {member.display_name}')
+                await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f'[sync] Failed to update role for {member.display_name}: {e}')
+ 
+        if i % 200 == 0:
+            logger.info(f'[sync] Progress: {i}/{len(members)} checked, {added} added, {removed} removed so far')
+ 
+    logger.info(f'[sync] Done. Checked {len(members)}, added {added}, removed {removed}.')
+    if status_callback:
+        await status_callback(f'Sync complete. Checked {len(members)} members, added role to {added}, removed from {removed}.')
+    return added, removed, len(members)
  
  
 def member_is_tagged(member: discord.Member, guild_id: int) -> bool:
@@ -194,7 +217,41 @@ async def on_member_update(before, after):
             logger.error(f'Failed to remove role from {after.display_name}: {e}')
  
  
-@bot.slash_command(name='warn', description='Warn a member')
+@bot.slash_command(name='synctags', description='Manually sync the Super Member role for everyone based on current server tag')
+async def synctags(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.respond('❌ No permission', ephemeral=True)
+        return
+ 
+    guild = ctx.guild
+    role = discord.utils.get(guild.roles, name=SUPER_MEMBER_ROLE_NAME)
+    if not role:
+        await ctx.respond(f'❌ Could not find a role named "{SUPER_MEMBER_ROLE_NAME}"', ephemeral=True)
+        return
+ 
+    await ctx.respond(f'🔄 Syncing {SUPER_MEMBER_ROLE_NAME} role for {len(guild.members)} members. This may take a bit - check the bot logs for progress.', ephemeral=True)
+    added, removed, checked = await sync_all_tag_roles(guild, role)
+    await ctx.followup.send(f'✅ Done. Checked {checked} members - added role to {added}, removed from {removed}.', ephemeral=True)
+ 
+ 
+@bot.slash_command(name='checktag', description='Check a member\'s current server tag and Super Member role status')
+async def checktag(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    guild = ctx.guild
+    role = discord.utils.get(guild.roles, name=SUPER_MEMBER_ROLE_NAME)
+ 
+    pg = getattr(member, 'primary_guild', None)
+    is_tagged = member_is_tagged(member, guild.id)
+    has_role = role in member.roles if role else False
+ 
+    em = discord.Embed(title=f'Tag status for {member.display_name}', color=discord.Color.blurple())
+    em.add_field(name='Has server tag displayed', value=str(is_tagged))
+    em.add_field(name=f'Has {SUPER_MEMBER_ROLE_NAME} role', value=str(has_role))
+    em.add_field(name='Raw primary_guild', value=str(pg) if pg else 'None', inline=False)
+    await ctx.respond(embed=em, ephemeral=True)
+ 
+ 
+ 
 async def warn(ctx, member: discord.Member, *, reason: str = 'No reason'):
     if not ctx.author.guild_permissions.administrator:
         await ctx.respond('❌ No permission', ephemeral=True)
