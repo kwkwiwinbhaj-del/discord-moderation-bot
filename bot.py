@@ -13,10 +13,12 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = int(os.getenv('GUILD_ID', '0'))
 DATABASE_URL = os.getenv('DATABASE_URL')
 LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID', '0'))
+SUPER_MEMBER_ROLE_NAME = 'Super Member'
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.guild_members = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
@@ -78,6 +80,56 @@ async def on_ready():
         db = Database(DATABASE_URL)
         db.init_tables()
         logger.info(f'Bot logged in as {bot.user}')
+    
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        role = discord.utils.get(guild.roles, name=SUPER_MEMBER_ROLE_NAME)
+        if not role:
+            try:
+                role = await guild.create_role(name=SUPER_MEMBER_ROLE_NAME, color=discord.Color.gold())
+                logger.info(f'Created {SUPER_MEMBER_ROLE_NAME} role')
+            except Exception as e:
+                logger.error(f'Failed to create role: {e}')
+
+@bot.event
+async def on_member_update(before, after):
+    guild = after.guild
+    if guild.id != GUILD_ID:
+        return
+    
+    role = discord.utils.get(guild.roles, name=SUPER_MEMBER_ROLE_NAME)
+    if not role:
+        return
+    
+    before_identity = getattr(before, 'identity', None)
+    after_identity = getattr(after, 'identity', None)
+    
+    before_is_tagged = before_identity and before_identity.guild_id == GUILD_ID if before_identity else False
+    after_is_tagged = after_identity and after_identity.guild_id == GUILD_ID if after_identity else False
+    
+    if not before_is_tagged and after_is_tagged:
+        try:
+            await after.add_roles(role)
+            logger.info(f'{after.display_name} enabled server tag → added {SUPER_MEMBER_ROLE_NAME} role')
+            if LOG_CHANNEL_ID:
+                ch = bot.get_channel(LOG_CHANNEL_ID)
+                if ch:
+                    em = discord.Embed(title='✅ Super Member Added', description=f'{after.mention} enabled server tag', color=discord.Color.gold())
+                    await ch.send(embed=em)
+        except Exception as e:
+            logger.error(f'Failed to add role to {after.display_name}: {e}')
+    
+    elif before_is_tagged and not after_is_tagged:
+        try:
+            await after.remove_roles(role)
+            logger.info(f'{after.display_name} disabled server tag → removed {SUPER_MEMBER_ROLE_NAME} role')
+            if LOG_CHANNEL_ID:
+                ch = bot.get_channel(LOG_CHANNEL_ID)
+                if ch:
+                    em = discord.Embed(title='❌ Super Member Removed', description=f'{after.mention} disabled server tag', color=discord.Color.red())
+                    await ch.send(embed=em)
+        except Exception as e:
+            logger.error(f'Failed to remove role from {after.display_name}: {e}')
 
 @bot.slash_command(name='warn', description='Warn a member')
 async def warn(ctx, member: discord.Member, *, reason: str = 'No reason'):
@@ -164,3 +216,4 @@ async def clearwarns(ctx, member: discord.Member):
 
 if __name__ == '__main__':
     bot.run(DISCORD_TOKEN)
+
